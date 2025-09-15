@@ -76,7 +76,7 @@ int read_pgm(const char* path, PGM* img) {
     while ((c = fgetc(file)) != EOF && (c == ' ' || c == '\t' || c == '\n'));
     ungetc(c, file);
     
-    img->data = malloc(img->w * img->h);
+    img->data = malloc(img->w * img->h); // cada pixel grayscale tem 1 byte, ou seja, w * h = tamanho
     if (!img->data) {
         fprintf(stderr, "Erro ao alocar memória\n");
         fclose(file);
@@ -139,7 +139,7 @@ int main(int argc, char** argv) {
     printf("FIFO aberto para escrita. Enviando cabeçalho...\n");
     
     // enviar cabeçalho
-    ssize_t bytes_written = write(fd, &header, sizeof(Header));
+    ssize_t bytes_written = write(fd, &header, sizeof(Header)); // envia para o outro processo
     printf("Bytes escritos do cabeçalho: %zd\n", bytes_written);
     
     // enviar dados da imagem aos poucos, imagens grandes não envia sem tempo de espera
@@ -149,7 +149,7 @@ int main(int argc, char** argv) {
 
     printf("Enviando imagem grande: %zd bytes...\n", total_bytes_to_write);
 
-    while (total_bytes_written < total_bytes_to_write) {
+    while (total_bytes_written < total_bytes_to_write) { // envia a imagem em blocos (importante pra imagens grandes)
         bytes_written = write(fd, buffer + total_bytes_written, total_bytes_to_write - total_bytes_written);
         
         if (bytes_written == -1) {

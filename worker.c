@@ -36,7 +36,7 @@ typedef struct {
     int row_end; // linha final (exclusiva)
 } Task;
 
-Task queue_buf[QMAX];
+Task queue_buf[QMAX]; // vetor da fila de tarefas, evita realocação de memoria
 int q_head = 0, q_tail = 0, q_count = 0;
 
 pthread_mutex_t q_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -56,8 +56,8 @@ int g_nthreads;
 void apply_negative_block(int rs, int re) {
     for (int y = rs; y < re; y++) {
         for (int x = 0; x < g_in.w; x++) {
-            int idx = y * g_in.w + x;
-            g_out.data[idx] = 255 - g_in.data[idx]; // 255 - r
+            int idx = y * g_in.w + x; // posição no vetor data
+            g_out.data[idx] = 255 - g_in.data[idx]; // 255 - pixel
         }
     }
 }
@@ -69,30 +69,31 @@ void apply_slice_block(int rs, int re, int t1, int t2) {
             unsigned char pixel = g_in.data[idx];
             
             if (pixel <= t1 || pixel >= t2) {
-                g_out.data[idx] = 0;
+                g_out.data[idx] = 0; // fora do intervalo = preto
             } else {
-                g_out.data[idx] = pixel;
+                g_out.data[idx] = pixel; // dentro do intervalo = mantidos
             }
         }
     }
 }
 
-void* worker_thread(void* arg) {
+void* worker_thread(void* arg) { // cada thread de trabalho:
     while (1) {
-        sem_wait(&sem_items);
-        pthread_mutex_lock(&q_lock);
+        sem_wait(&sem_items); // espera por tarefa disponivel
+        pthread_mutex_lock(&q_lock); // acessa ou modifica fila, acessa com segurança mutex
+// uma thread por vez pode modificar q_head q_tail e q_count
         
         if (q_count == 0) {
             pthread_mutex_unlock(&q_lock);
             break;
         }
         
-        Task task = queue_buf[q_head];
+        Task task = queue_buf[q_head]; // fila
         q_head = (q_head + 1) % QMAX;
         q_count--;
         
         pthread_mutex_unlock(&q_lock);
-        sem_post(&sem_space);
+        sem_post(&sem_space); // libera espaço na fila
         
         if (g_mode == MODE_NEG) {
             apply_negative_block(task.row_start, task.row_end);
@@ -101,11 +102,12 @@ void* worker_thread(void* arg) {
         }
         
         pthread_mutex_lock(&done_lock);
-        remaining_tasks--;
+        remaining_tasks--; // contador compartilhado, cada thread decrementa até terminar sua tarefa, com mutex apenas 1
+        // thread acessa
         if (remaining_tasks == 0) {
-            sem_post(&sem_done);
+            sem_post(&sem_done); // tudo terminou, thread worker avisa para fechar as demais threads
         }
-        pthread_mutex_unlock(&done_lock);
+        pthread_mutex_unlock(&done_lock); // desbloqueia o contador e protege o contador de tarefas restantes
     }
     return NULL;
 }
@@ -141,7 +143,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Modo inválido\n");
         exit(1);
     }
-    // 777 porque 666 nao estava deixando criar.
+    // 777 porque 666 nao estava deixando criar no WSL
     mkfifo(fifo_path, 0777);
     
     int fd = open(fifo_path, O_RDONLY);
@@ -158,17 +160,17 @@ int main(int argc, char** argv) {
         close(fd);
         exit(1);
     }
-    
+    // extrai os valores recebidos do Header do sender
     int w = header.w;
     int h = header.h;
     int maxv = header.maxv;
-    
+    // imagem de entrada e saída com os mesmos parâmetros e tamanhos
     g_in.w = g_out.w = w;
     g_in.h = g_out.h = h;
     g_in.maxv = g_out.maxv = maxv;
     
-    g_in.data = malloc(w * h);
-    g_out.data = malloc(w * h);
+    g_in.data = malloc(w * h); // alocação da imagem recebida
+    g_out.data = malloc(w * h); // alocação da imagem exportada
     
     if (!g_in.data || !g_out.data) {
         fprintf(stderr, "ERRO: Falha na alocação de memória\n");
@@ -208,7 +210,8 @@ int main(int argc, char** argv) {
         pthread_create(&threads[i], NULL, worker_thread, NULL);
     }
     
-    int rows_per_task = (h + g_nthreads - 1) / g_nthreads;
+    int rows_per_task = (h + g_nthreads - 1) / g_nthreads; // a imagem é dividida em blocos de linha, cada bloco vira uma 
+    //tarefa que sera processada por uma thread
     remaining_tasks = 0;
     
     for (int i = 0; i < g_nthreads; i++) {
@@ -221,8 +224,8 @@ int main(int argc, char** argv) {
             task.row_end = h;
         }
         
-        sem_wait(&sem_space);
-        pthread_mutex_lock(&q_lock);
+        sem_wait(&sem_space); // espera espaço livre
+        pthread_mutex_lock(&q_lock); // protege o acesso a fila
         
         queue_buf[q_tail] = task;
         q_tail = (q_tail + 1) % QMAX;
@@ -230,10 +233,10 @@ int main(int argc, char** argv) {
         remaining_tasks++;
         
         pthread_mutex_unlock(&q_lock);
-        sem_post(&sem_items);
+        sem_post(&sem_items); // depois de adcionar uma tarefa a aplicação avisa que há uma nova tarefa
     }
     
-    sem_wait(&sem_done);
+    sem_wait(&sem_done); // espera todas as tarefas terminarem
     
     for (int i = 0; i < g_nthreads; i++) {
         sem_post(&sem_items);
